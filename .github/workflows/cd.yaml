@@ -85,9 +85,9 @@ jobs:
           echo "${{ secrets[format('KUBECONFIG_{0}', github.event.inputs.environment)] }}" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
           
-          # Verify connection
-          kubectl cluster-info
-          kubectl get namespaces
+          # # Verify connection
+          # kubectl cluster-info
+          # kubectl get namespaces
       
       - name: ��� Update Deployment with New Image
         run: |
