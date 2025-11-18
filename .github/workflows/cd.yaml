@@ -1,0 +1,139 @@
+name: ��� CD - Deploy to K8s
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '��� Target Environment'
+        required: true
+        type: choice
+        options:
+          - testing
+          - qa
+      image_tag:
+        description: '���️ Docker Image Tag (leave empty to fetch from Docker Hub)'
+        required: false
+        type: string
+
+env:
+  DOCKER_IMAGE: your-actual-username/myapp
+
+jobs:
+  fetch-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      available_tags: ${{ steps.fetch.outputs.tags }}
+      selected_tag: ${{ steps.select.outputs.tag }}
+    
+    steps:
+      - name: ��� Fetch Available Tags from Docker Hub
+        id: fetch
+        run: |
+          echo "Fetching tags from Docker Hub..."
+          
+          # Fetch tags from Docker Hub API
+          TAGS=$(curl -s "https://hub.docker.com/v2/repositories/${{ env.DOCKER_IMAGE }}/tags/?page_size=10" |             jq -r '.results[].name' | grep -v "buildcache" | head -10 | tr '\n' ',' | sed 's/,$//')
+          
+          echo "Available tags: $TAGS"
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+      
+      - name: ���️ Select Tag
+        id: select
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+            echo "Using provided tag: $TAG"
+          else
+            # Use latest tag if none provided
+            TAG="latest"
+            echo "No tag provided, using: $TAG"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      
+      - name: ��� Tag Summary
+        run: |
+          echo "### ���️ Available Docker Tags" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.fetch.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Selected Tag:** ${{ steps.select.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+
+  deploy:
+    needs: fetch-tags
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: ��� Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: ��� Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+      
+      - name: ��� Configure Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          
+          # Decode the kubeconfig for selected environment
+          ENV="${{ github.event.inputs.environment }}"
+          SECRET_NAME="KUBECONFIG_${ENV}"
+          
+          echo "${{ secrets[format('KUBECONFIG_{0}', github.event.inputs.environment)] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          
+          # Verify connection
+          kubectl cluster-info
+          kubectl get namespaces
+      
+      - name: ��� Update Deployment with New Image
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          IMAGE_TAG="${{ needs.fetch-tags.outputs.selected_tag }}"
+          IMAGE="${{ env.DOCKER_IMAGE }}:${IMAGE_TAG}"
+          
+          echo "Deploying to namespace: $ENV"
+          echo "Using image: $IMAGE"
+          
+          # Update deployment image
+          sed -i "s|image:.*|image: $IMAGE|g" k8s/deployment.yaml
+          
+          # Apply manifests
+          kubectl apply -n $ENV -f k8s/service.yaml
+          kubectl apply -n $ENV -f k8s/deployment.yaml
+      
+      - name: ⏳ Wait for Rollout
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          kubectl rollout status deployment/myapp -n $ENV --timeout=5m
+      
+      - name: ✅ Verify Deployment
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          
+          echo "### ��� Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** $ENV" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.DOCKER_IMAGE }}:${{ needs.fetch-tags.outputs.selected_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### ��� Pod Status" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n $ENV -l app=myapp >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ��� Service Status" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n $ENV -l app=myapp >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+      
+      - name: ��� Health Check
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          kubectl wait --for=condition=ready pod -l app=myapp -n $ENV --timeout=3m
+          
+          echo "✅ All pods are healthy and ready!"
