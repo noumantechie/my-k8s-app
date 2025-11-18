@@ -16,7 +16,7 @@ on:
         type: string
 
 env:
-  DOCKER_IMAGE: your-actual-username/myapp
+  DOCKER_IMAGE: noman071/myapp
 
 jobs:
   fetch-tags:
